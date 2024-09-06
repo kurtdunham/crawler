@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -62,4 +64,28 @@ func getURLsFromHTML(htmlBody, rawBaseURL string) ([]string, error) {
 	traverseNodes(doc)
 
 	return urls, nil
+}
+
+func getHTML(rawURL string) (string, error) {
+	resp, err := http.Get(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("got Network error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode > 399 {
+		return "", fmt.Errorf("got HTTP error: %s", resp.Status)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		return "", fmt.Errorf("got non-HTML response: %s", contentType)
+	}
+
+	htmlBodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("couldn't read response body: %v", err)
+	}
+
+	return string(htmlBodyBytes), nil
 }
