@@ -89,3 +89,69 @@ func getHTML(rawURL string) (string, error) {
 
 	return string(htmlBodyBytes), nil
 }
+
+// In the first call to crawlPage(), rawCurrentURL is a copy of rawBaseURL,
+// but as we make further HTTP requests to all the URLs we find on the rawBaseURL,
+// the rawCurrentURL value will change while the base stays the same
+func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
+	// first check rawCurrentURL is on same domain as rawBaseURL
+	// if not, return current pages
+
+	fmt.Printf("Parsing URLs: Current: %s, Base: %s\n", rawCurrentURL, rawBaseURL)
+	currentURL, err := url.Parse(rawCurrentURL)
+	if err != nil {
+		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", rawCurrentURL, err)
+		return
+	}
+	baseURL, err := url.Parse(rawBaseURL)
+	if err != nil {
+		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", rawBaseURL, err)
+		return
+	}
+	// Skip other websites
+	if currentURL.Hostname() != baseURL.Hostname() {
+		fmt.Print("current URL domain and root URL domain do not match\n")
+		return
+	}
+	fmt.Printf("Domains match: %s\n", currentURL.Hostname())
+
+	// Attempt to normalize the URL and track page counts
+	fmt.Printf("Normalizing URL: %s\n", rawCurrentURL)
+	normalizedURL, err := normalizeURL(rawCurrentURL)
+	if err != nil {
+		fmt.Printf("Error normalizing url: %v", err)
+		return
+	}
+	// Increment the page count and log the change
+	if _, visited := pages[normalizedURL]; visited {
+		// We've crawled this page before, increment and be done
+		pages[normalizedURL]++
+		return
+	}
+	// First encounter with the page, initialize with count 1
+	pages[normalizedURL] = 1
+
+	fmt.Printf("Pages: %s has been crawled %d time(s).\n", normalizedURL, pages[normalizedURL])
+
+	// print the HTML from the current URL to watch crawler in real-time
+	htmlBody, err := getHTML(rawCurrentURL)
+	if err != nil {
+		fmt.Printf("error reading HTML: %v", err)
+		return
+	}
+	fmt.Print(htmlBody)
+
+	// extract urls from html response
+	nextURLs, err := getURLsFromHTML(htmlBody, rawBaseURL)
+	if err != nil {
+		fmt.Printf("error parsing URLS from HTML: %v", err)
+		return
+	}
+
+	// crawl through  each url
+	for _, url := range nextURLs {
+		fmt.Printf("Crawling URL: %s\n", url)
+		crawlPage(rawBaseURL, url, pages)
+		fmt.Print("finished crawling URL \n")
+	}
+}

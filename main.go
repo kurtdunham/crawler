@@ -10,20 +10,21 @@ func main() {
 	argsWithoutProg := os.Args[1:]
 	if len(argsWithoutProg) < 1 {
 		fmt.Println("no website provided")
-		os.Exit(1)
+		return
 	}
 
 	if len(argsWithoutProg) > 1 {
 		fmt.Println("too many arguments provided")
-		os.Exit(1)
+		return
 	}
 
 	rawBaseURL := argsWithoutProg[0]
 	fmt.Printf("starting crawl of: %v...\n", rawBaseURL)
 
-	htmlBody, err := getHTML(rawBaseURL)
-	if err != nil {
-		fmt.Printf("unable to get html: %v", err)
+	pages := make(map[string]int)
+
+	crawlPage(rawBaseURL, rawBaseURL, pages)
+	for normalizedURL, count := range pages {
+		fmt.Printf("%d - %s\n", count, normalizedURL)
 	}
-	fmt.Print(htmlBody)
 }
