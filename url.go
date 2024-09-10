@@ -7,9 +7,19 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"golang.org/x/net/html"
 )
+
+type config struct {
+	pages              map[string]int
+	baseURL            *url.URL
+	mu                 *sync.Mutex
+	concurrencyControl chan struct{}
+	wg                 *sync.WaitGroup
+	maxPages           int
+}
 
 func normalizeURL(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
@@ -27,12 +37,7 @@ func normalizeURL(rawURL string) (string, error) {
 	return normalized, nil
 }
 
-func getURLsFromHTML(htmlBody, rawBaseURL string) ([]string, error) {
-	baseURL, err := url.Parse(rawBaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't parse base URL: %v", err)
-	}
-
+func getURLsFromHTML(htmlBody string, baseURL *url.URL) ([]string, error) {
 	htmlReader := strings.NewReader(htmlBody)
 	doc, err := html.Parse(htmlReader)
 	if err != nil {
@@ -90,68 +95,99 @@ func getHTML(rawURL string) (string, error) {
 	return string(htmlBodyBytes), nil
 }
 
-// In the first call to crawlPage(), rawCurrentURL is a copy of rawBaseURL,
-// but as we make further HTTP requests to all the URLs we find on the rawBaseURL,
-// the rawCurrentURL value will change while the base stays the same
-func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
-	// first check rawCurrentURL is on same domain as rawBaseURL
-	// if not, return current pages
+func (cfg *config) crawlPage(rawCurrentURL string) {
+	cfg.concurrencyControl <- struct{}{}
+	defer func() {
+		<-cfg.concurrencyControl
+		cfg.wg.Done()
+	}()
 
-	fmt.Printf("Parsing URLs: Current: %s, Base: %s\n", rawCurrentURL, rawBaseURL)
+	if cfg.pagesLen() >= cfg.maxPages {
+		return
+	}
+
+	fmt.Printf("Parsing URL: %s\n", rawCurrentURL)
 	currentURL, err := url.Parse(rawCurrentURL)
 	if err != nil {
 		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", rawCurrentURL, err)
 		return
 	}
-	baseURL, err := url.Parse(rawBaseURL)
-	if err != nil {
-		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", rawBaseURL, err)
-		return
-	}
+
 	// Skip other websites
-	if currentURL.Hostname() != baseURL.Hostname() {
-		fmt.Print("current URL domain and root URL domain do not match\n")
+	if currentURL.Hostname() != cfg.baseURL.Hostname() {
+		fmt.Printf("current domain and root domain do not match\nSkipping crawl of %v\n", currentURL)
 		return
 	}
-	fmt.Printf("Domains match: %s\n", currentURL.Hostname())
 
 	// Attempt to normalize the URL and track page counts
-	fmt.Printf("Normalizing URL: %s\n", rawCurrentURL)
 	normalizedURL, err := normalizeURL(rawCurrentURL)
 	if err != nil {
-		fmt.Printf("Error normalizing url: %v", err)
+		fmt.Printf("Error normalizing url: %v\n", err)
 		return
 	}
-	// Increment the page count and log the change
-	if _, visited := pages[normalizedURL]; visited {
-		// We've crawled this page before, increment and be done
-		pages[normalizedURL]++
+	isFirst := cfg.addPageVisit(normalizedURL)
+	if !isFirst {
 		return
 	}
-	// First encounter with the page, initialize with count 1
-	pages[normalizedURL] = 1
-
-	fmt.Printf("Pages: %s has been crawled %d time(s).\n", normalizedURL, pages[normalizedURL])
-
-	// print the HTML from the current URL to watch crawler in real-time
-	htmlBody, err := getHTML(rawCurrentURL)
-	if err != nil {
-		fmt.Printf("error reading HTML: %v", err)
-		return
-	}
-	fmt.Print(htmlBody)
+	fmt.Printf("Crawling URL: %s\n", rawCurrentURL)
 
 	// extract urls from html response
-	nextURLs, err := getURLsFromHTML(htmlBody, rawBaseURL)
+	htmlBody, err := getHTML(rawCurrentURL)
 	if err != nil {
-		fmt.Printf("error parsing URLS from HTML: %v", err)
+		fmt.Printf("Error reading HTML: %v\n", err)
+		return
+	}
+
+	nextURLs, err := getURLsFromHTML(htmlBody, cfg.baseURL)
+	if err != nil {
+		fmt.Printf("Error parsing URLS from HTML: %v\n", err)
 		return
 	}
 
 	// crawl through  each url
 	for _, url := range nextURLs {
-		fmt.Printf("Crawling URL: %s\n", url)
-		crawlPage(rawBaseURL, url, pages)
-		fmt.Print("finished crawling URL \n")
+		if isFirst {
+			cfg.wg.Add(1)
+			go cfg.crawlPage(url)
+		}
 	}
+}
+
+func (cfg *config) addPageVisit(normalizedURL string) (isFirst bool) {
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
+
+	if len(cfg.pages) >= cfg.maxPages {
+		return false
+	}
+
+	if _, visited := cfg.pages[normalizedURL]; visited {
+		cfg.pages[normalizedURL]++
+		return false
+	}
+	// First encounter with the page, initialize with count 1
+	cfg.pages[normalizedURL] = 1
+	return true
+}
+
+func (cfg *config) pagesLen() int {
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
+	return len(cfg.pages)
+}
+
+func configure(rawBaseURL string, maxConcurrency int, maxPages int) (*config, error) {
+	baseURL, err := url.Parse(rawBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't parse URL: %v", err)
+	}
+
+	return &config{
+		pages:              make(map[string]int),
+		baseURL:            baseURL,
+		mu:                 &sync.Mutex{},
+		concurrencyControl: make(chan struct{}, maxConcurrency),
+		wg:                 &sync.WaitGroup{},
+		maxPages:           maxPages,
+	}, nil
 }
